@@ -418,6 +418,9 @@ type
     procedure CMHintShow(var Msg: TMessage); message CM_HINTSHOW;
     procedure WMEraseBkgnd(var Message: TWMEraseBkgnd); message WM_ERASEBKGND;
     procedure WMNCPaint(var Message: TWMNCPaint); message WM_NCPAINT;
+    {$IFDEF RTL200_UP}
+    procedure CMDoublebufferedchanged(var Message: TMessage); message CM_DOUBLEBUFFEREDCHANGED;
+    {$ENDIF RTL200_UP}
     procedure ReadEscapeClear(Reader: TReader);
     procedure SetMouseOverButton(Value: Boolean);
   protected
@@ -2374,6 +2377,7 @@ end;
 procedure TJvDBLookupList.WMVScroll(var Msg: TWMVScroll);
 var
   ScrollableRowCount: Integer;
+  ScrollInfo: TScrollInfo;
 begin
   FSearchText := '';
   if FLookupLink.DataSet = nil then
@@ -2391,19 +2395,36 @@ begin
         MoveBy(-FRecordIndex - ScrollableRowCount + 1);
       SB_PAGEDOWN:
         MoveBy(ScrollableRowCount - FRecordIndex + ScrollableRowCount - 2);
-      SB_THUMBPOSITION:
+      SB_THUMBPOSITION, SB_THUMBTRACK:
         begin
-          case Pos of
-            0:
-              First;
-            1:
-              MoveBy(-FRecordIndex - ScrollableRowCount + 1);
-            2:
-              Exit;
-            3:
-              MoveBy(ScrollableRowCount - FRecordIndex + ScrollableRowCount - 2);
-            4:
-              Last;
+          if UseRecordCount then
+          begin
+            if Pos = 0 then
+              First
+            else if Pos = FRecordCount - 1 then
+              Last
+            else
+            begin
+              ScrollInfo.cbSize := SizeOf(ScrollInfo);
+              ScrollInfo.fMask := SIF_POS;
+              if GetScrollInfo(Handle, SB_VERT, ScrollInfo) then
+                MoveBy(-ScrollInfo.nPos + Pos);
+            end;
+          end
+          else if ScrollCode = SB_THUMBPOSITION then
+          begin
+            case Pos of
+              0:
+                First;
+              1:
+                MoveBy(-FRecordIndex - ScrollableRowCount + 1);
+              2:
+                Exit;
+              3:
+                MoveBy(ScrollableRowCount - FRecordIndex + ScrollableRowCount - 2);
+              4:
+                Last;
+            end;
           end;
         end;
       SB_BOTTOM:
@@ -3379,6 +3400,20 @@ begin
     inherited;
 end;
 
+{$IFDEF RTL200_UP}
+procedure TJvDBLookupCombo.CMDoublebufferedchanged(var Message: TMessage);
+begin
+  {$IFDEF JVCLThemesEnabled}
+  // We don't support double buffering. It causes painting issues in double buffered WM_PAINT vs.
+  // our WM_NCPAINT code that paints over the region that WM_PAINT also paints.
+  if DoubleBuffered then
+    DoubleBuffered := False // recurive call
+  else
+  {$ENDIF JVCLThemesEnabled}
+    inherited;
+end;
+{$ENDIF RTL200_UP}
+
 procedure TJvDBLookupCombo.Paint;
 const
   TransColor: array [Boolean] of TColor = (clBtnFace, clWhite);
@@ -3569,8 +3604,15 @@ begin
   {$IFDEF JVCLThemesEnabled}
   if StyleServices.Enabled then
   begin
-    if not (StyleServices.IsSystemStyle and JclCheckWinVersion(6, 0)) then // for Vista and newer the WM_NCPAINT handler paints the button
+    if DoubleBuffered or not (StyleServices.IsSystemStyle and JclCheckWinVersion(6, 0)) then // for Vista and newer the WM_NCPAINT handler paints the button
     begin
+      if not (StyleServices.IsSystemStyle and JclCheckWinVersion(6, 0)) then
+      begin
+        // If DoubleBuffered we need to paint it as client (WM_PRINTCLIENT) and as non-client (WM_NCPAINT)
+        InflateRect(R, 1, 1);
+        OffsetRect(R, 2, 0);
+      end;
+
       if not FListActive or not Enabled or ReadOnly then
         State := tcDropDownButtonDisabled
       else
